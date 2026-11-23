@@ -1346,6 +1346,726 @@ public class ConstraintTest
         response = _connector.getResponses("GET /ctx/forbid/post HTTP/1.0\r\n\r\n");
         Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));  // This is so stupid, but it is the S P E C
     }
+
+    private static final String[] INVALID_HTTP_METHOD_NAMES = {
+        "*",
+        "  ",
+        "\t",
+        "bogus name"
+    };
+
+    @Test
+    public void testSetInvalidHttpMethod()
+    {
+        for (String name : INVALID_HTTP_METHOD_NAMES)
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            try
+            {
+                mapping.setMethod(name);
+                Assert.fail("Expected IllegalArgumentException for http-method [" + name + "]");
+            }
+            catch (IllegalArgumentException expected)
+            {
+                // expected
+            }
+        }
+    }
+
+    @Test
+    public void testSetInvalidHttpMethodOmission()
+    {
+        for (String name : INVALID_HTTP_METHOD_NAMES)
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            try
+            {
+                mapping.setMethodOmissions(new String[]{name});
+                Assert.fail("Expected IllegalArgumentException for http-method-omission [" + name + "]");
+            }
+            catch (IllegalArgumentException expected)
+            {
+                // expected
+            }
+        }
+    }
+
+    @Test
+    public void testSetHttpMethodOmissionWithNullEntries()
+    {
+        ConstraintMapping mapping = new ConstraintMapping();
+        String[] names = new String[]{"GET", null, "POST"};
+        try
+        {
+            mapping.setMethodOmissions(names);
+            Assert.fail("Expected IllegalArgumentException for null http-method-omission entry");
+        }
+        catch (IllegalArgumentException expected)
+        {
+            // expected
+        }
+    }
+
+    /**
+     * Replication of Constraint combination from
+     * <a href="https://jakarta.ee/specifications/servlet/5.0/jakarta-servlet-spec-5.0#combining-constraints">Jakarta Servlet Spec 13.8.1 : Combining Constraints</a>.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testServletSpecCombinedConstraintsExamples() throws Exception
+    {
+        // httpMethod, requestPath, expectedIsChecked, expectedForbidden, expectedRoles, expectedConfidential
+        Object[][] cases = {
+            // Test the Table 13-4 "Security Constraint Table" url-pattern of "/*"
+            {"PUT", "/foo", true, true, new String[]{}, false},
+            {"GET", "/foo", false, false, null, null},
+            {"POST", "/foo", false, false, null, null},
+            // Test the Table 13-4 "Security Constraint Table" url-pattern of "/acme/wholesale/*"
+            {"PUT", "/acme/wholesale/foo", true, false, new String[]{"SALESCLERK"}, false},
+            {"GET", "/acme/wholesale/foo", true, false, new String[]{"CONTRACTOR", "SALESCLERK"}, false},
+            {"POST", "/acme/wholesale/foo", true, false, new String[]{"CONTRACTOR"}, true},
+            // Test the Table 13-4 "Security Constraint Table" url-pattern of "/acme/retail/*"
+            {"PUT", "/acme/retail/foo", true, true, new String[]{}, false},
+            {"GET", "/acme/retail/foo", true, false, new String[]{"CONTRACTOR", "HOMEOWNER"}, false},
+            {"POST", "/acme/retail/foo", true, false, new String[]{"CONTRACTOR", "HOMEOWNER"}, false}
+        };
+
+        List<ConstraintMapping> mappings = new ArrayList<>();
+
+        // Note: the path spec `/*` is known to produce the "has uncovered HTTP methods" warning, do not try to fix by changing these constraints.
+
+        /*
+        <security-constraint>
+          <web-resource-collection>
+            <web-resource-name>precluded methods</web-resource-name>
+            <url-pattern>/*</url-pattern>
+            <url-pattern>/acme/wholesale/*</url-pattern>
+            <url-pattern>/acme/retail/*</url-pattern>
+            <http-method-omission>GET</http-method-omission>
+            <http-method-omission>POST</http-method-omission>
+          </web-resource-collection>
+          <auth-constraint/>
+        </security-constraint>
+         */
+        Constraint forbidConstraint = new Constraint();
+        forbidConstraint.setAuthenticate(true);
+        forbidConstraint.setName("forbidden");
+        for (String pathSpec : Arrays.asList("/*", "/acme/wholesale/*", "/acme/retail/*"))
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            mapping.setPathSpec(pathSpec);
+            mapping.setMethodOmissions(new String[]{"GET", "POST"});
+            mapping.setConstraint(forbidConstraint);
+            mappings.add(mapping);
+        }
+
+        /*
+        <security-constraint>
+          <web-resource-collection>
+            <web-resource-name>wholesale</web-resource-name>
+            <url-pattern>/acme/wholesale/*</url-pattern>
+            <http-method>GET</http-method>
+            <http-method>PUT</http-method>
+          </web-resource-collection>
+          <auth-constraint>
+            <role-name>SALESCLERK</role-name>
+          </auth-constraint>
+        </security-constraint>
+         */
+        Constraint wholesaleConstraint = new Constraint();
+        wholesaleConstraint.setAuthenticate(true);
+        wholesaleConstraint.setRoles(new String[]{"SALESCLERK"});
+        for (String wholesaleMethod : Arrays.asList("GET", "PUT"))
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            mapping.setPathSpec("/acme/wholesale/*");
+            mapping.setMethod(wholesaleMethod);
+            mapping.setConstraint(wholesaleConstraint);
+            mappings.add(mapping);
+        }
+
+        /*
+        <security-constraint>
+          <web-resource-collection>
+            <web-resource-name>wholesale 2</web-resource-name>
+            <url-pattern>/acme/wholesale/*</url-pattern>
+            <http-method>GET</http-method>
+            <http-method>POST</http-method>
+          </web-resource-collection>
+          <auth-constraint>
+            <role-name>CONTRACTOR</role-name>
+          </auth-constraint>
+          <user-data-constraint>
+            <transport-guarantee>CONFIDENTIAL</transport-guarantee>
+          </user-data-constraint>
+        </security-constraint>
+         */
+        Constraint wholesale2Constraint = new Constraint();
+        wholesale2Constraint.setAuthenticate(true);
+        wholesale2Constraint.setRoles(new String[]{"CONTRACTOR"});
+        wholesale2Constraint.setDataConstraint(Constraint.DC_CONFIDENTIAL);
+        for (String wholesale2Method : Arrays.asList("GET", "POST"))
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            mapping.setPathSpec("/acme/wholesale/*");
+            mapping.setMethod(wholesale2Method);
+            mapping.setConstraint(wholesale2Constraint);
+            mappings.add(mapping);
+        }
+
+        /*
+        <security-constraint>
+          <web-resource-collection>
+            <web-resource-name>retail</web-resource-name>
+            <url-pattern>/acme/retail/*</url-pattern>
+            <http-method>GET</http-method>
+            <http-method>POST</http-method>
+          </web-resource-collection>
+
+          <auth-constraint>
+            <role-name>CONTRACTOR</role-name>
+            <role-name>HOMEOWNER</role-name>
+          </auth-constraint>
+        </security-constraint>
+         */
+        Constraint retailConstraint = new Constraint();
+        retailConstraint.setAuthenticate(true);
+        retailConstraint.setRoles(new String[]{"CONTRACTOR", "HOMEOWNER"});
+        for (String retailMethod : Arrays.asList("GET", "POST"))
+        {
+            ConstraintMapping mapping = new ConstraintMapping();
+            mapping.setPathSpec("/acme/retail/*");
+            mapping.setMethod(retailMethod);
+            mapping.setConstraint(retailConstraint);
+            mappings.add(mapping);
+        }
+
+        Set<String> knownRoles = new HashSet<>(Arrays.asList("SALESCLERK", "CONTRACTOR", "HOMEOWNER"));
+        _security.setConstraintMappings(mappings, knownRoles);
+        _server.start();
+
+        for (Object[] c : cases)
+        {
+            String httpMethod = (String)c[0];
+            String requestPath = (String)c[1];
+            boolean expectedIsChecked = (Boolean)c[2];
+            boolean expectedForbidden = (Boolean)c[3];
+            String[] expectedRoles = (String[])c[4];
+            Boolean expectedConfidential = (Boolean)c[5];
+
+            RoleInfo roleInfo = _security.prepareConstraintInfo(requestPath, httpMethod);
+            Assert.assertEquals(String.format("%s %s roleInfo isChecked", httpMethod, requestPath), expectedIsChecked, roleInfo.isChecked());
+            if (roleInfo.isChecked())
+            {
+                Assert.assertEquals(String.format("%s %s forbidden", httpMethod, requestPath), expectedForbidden, roleInfo.isForbidden());
+                Assert.assertEquals(String.format("%s %s roles", httpMethod, requestPath), new HashSet<>(Arrays.asList(expectedRoles)), roleInfo.getRoles());
+                Assert.assertEquals(String.format("%s %s user data constraint", httpMethod, requestPath),
+                    expectedConfidential, roleInfo.getUserDataConstraint() == UserDataConstraint.Confidential);
+            }
+        }
+    }
+
+    private static final Object[][] SINGLE_METHOD_OMISSION_CASES = {
+        // Try some RFC9110 standardized method declarations
+        {"GET", "GET", "/test/foo", false},
+        {"GET", "PUT", "/test/foo", true},
+        {"GET", "POST", "/test/foo", true},
+        {"GET", "DELETE", "/test/foo", true},
+        // Try some WebDav methods
+        {"PATCH", "PATCH", "/test/foo", false},
+        {"PATCH", "PROPPATCH", "/test/foo", true},
+        {"PATCH", "ORDERPATCH", "/test/foo", true},
+        {"PATCH", "PROPFIND", "/test/foo", true},
+        {"PATCH", "MKCOL", "/test/foo", true},
+        {"MKCOL", "MKCOL", "/test/foo", false},
+        {"PROPPATCH", "PATCH", "/test/foo", true},
+        {"PROPPATCH", "ORDERPATCH", "/test/foo", true},
+        {"PROPFIND", "PROPFIND", "/test/foo", false},
+        // Try some non-standard method declarations
+        {"CorpQuery", "CorpQuery", "/test/foo", false},
+        {"CorpQuery", "GET", "/test/foo", true},
+        {"CorpQuery", "POST", "/test/foo", true}
+    };
+
+    /**
+     * Stop the current server and create a fresh one (with a fresh security handler).
+     * @throws Exception if the server cannot be stopped
+     */
+    private void resetServer() throws Exception
+    {
+        stopServer();
+        startServer();
+    }
+
+    /**
+     * Tests forbidden http-method-omission
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testSingleForbiddenMethodOmissionConstraint() throws Exception
+    {
+        for (Object[] c : SINGLE_METHOD_OMISSION_CASES)
+        {
+            String httpMethodOmission = (String)c[0];
+            String requestHttpMethod = (String)c[1];
+            String requestPath = (String)c[2];
+            boolean expectedForbidden = (Boolean)c[3];
+
+            resetServer();
+            Constraint forbidConstraint = new Constraint();
+            forbidConstraint.setAuthenticate(true);
+            forbidConstraint.setName("forbid");
+            ConstraintMapping forbiddenMapping = new ConstraintMapping();
+            forbiddenMapping.setPathSpec("/test/*");
+            forbiddenMapping.setMethodOmissions(new String[]{httpMethodOmission});
+            forbiddenMapping.setConstraint(forbidConstraint);
+            _security.setConstraintMappings(Collections.singletonList(forbiddenMapping));
+            _server.start();
+
+            RoleInfo roleInfo = _security.prepareConstraintInfo(requestPath, requestHttpMethod);
+            boolean constraintIsChecked = expectedForbidden && !httpMethodOmission.equalsIgnoreCase(requestHttpMethod);
+            Assert.assertEquals(String.format("omit %s: %s %s roleInfo isChecked", httpMethodOmission, requestHttpMethod, requestPath), constraintIsChecked, roleInfo.isChecked());
+            if (roleInfo.isChecked())
+            {
+                Assert.assertEquals(String.format("omit %s: %s %s forbidden", httpMethodOmission, requestHttpMethod, requestPath), expectedForbidden, roleInfo.isForbidden());
+            }
+        }
+    }
+
+    /**
+     * Tests allowed http-method-omission
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testSingleAllowedMethodOmissionConstraint() throws Exception
+    {
+        for (Object[] c : SINGLE_METHOD_OMISSION_CASES)
+        {
+            String httpMethodOmission = (String)c[0];
+            String requestHttpMethod = (String)c[1];
+            String requestPath = (String)c[2];
+            boolean expectAllowed = (Boolean)c[3];
+
+            resetServer();
+            Constraint allowConstraint = new Constraint();
+            allowConstraint.setAuthenticate(false);
+            allowConstraint.setName("allowed");
+            ConstraintMapping allowedMapping = new ConstraintMapping();
+            allowedMapping.setPathSpec("/test/*");
+            allowedMapping.setMethodOmissions(new String[]{httpMethodOmission});
+            allowedMapping.setConstraint(allowConstraint);
+            _security.setConstraintMappings(Collections.singletonList(allowedMapping));
+            _server.start();
+
+            RoleInfo roleInfo = _security.prepareConstraintInfo(requestPath, requestHttpMethod);
+            boolean constraintIsChecked = !expectAllowed && !httpMethodOmission.equalsIgnoreCase(requestHttpMethod);
+            Assert.assertEquals(String.format("omit %s: %s %s roleInfo isChecked", httpMethodOmission, requestHttpMethod, requestPath), constraintIsChecked, roleInfo.isChecked());
+            if (roleInfo.isChecked())
+            {
+                Assert.assertEquals(String.format("omit %s: %s %s allowed", httpMethodOmission, requestHttpMethod, requestPath), !expectAllowed, roleInfo.isForbidden());
+            }
+        }
+    }
+
+    private static final Object[][] COMBINED_ALLOWED_FORBIDDEN_METHOD_OMISSION_CASES = {
+        // Neither constraint covers GET
+        {"GET", "/test/foo", false},
+        // The forbidden constraint wins
+        {"PUT", "/test/foo", true},
+        {"POST", "/test/foo", true},
+        {"DELETE", "/test/foo", true}
+    };
+
+    private void assertCombinedAllowedForbiddenMethodOmissionConstraints(boolean forbiddenFirst) throws Exception
+    {
+        // Note: these two constraints are known to produce the "has uncovered HTTP methods" warning, do not try to fix by changing these constraints.
+        Constraint forbidConstraint = new Constraint();
+        forbidConstraint.setAuthenticate(true);
+        forbidConstraint.setName("forbidden");
+        ConstraintMapping forbiddenMapping = new ConstraintMapping();
+        forbiddenMapping.setPathSpec("/test/*");
+        forbiddenMapping.setMethodOmissions(new String[]{"GET"});
+        forbiddenMapping.setConstraint(forbidConstraint);
+
+        Constraint allowConstraint = new Constraint();
+        allowConstraint.setAuthenticate(false);
+        allowConstraint.setName("allowed");
+        ConstraintMapping allowedMapping = new ConstraintMapping();
+        allowedMapping.setPathSpec("/test/*");
+        allowedMapping.setMethodOmissions(new String[]{"GET"});
+        allowedMapping.setConstraint(allowConstraint);
+
+        if (forbiddenFirst)
+            _security.setConstraintMappings(Arrays.asList(forbiddenMapping, allowedMapping));
+        else
+            _security.setConstraintMappings(Arrays.asList(allowedMapping, forbiddenMapping));
+        _server.start();
+
+        for (Object[] c : COMBINED_ALLOWED_FORBIDDEN_METHOD_OMISSION_CASES)
+        {
+            String httpMethod = (String)c[0];
+            String requestPath = (String)c[1];
+            boolean expectedForbidden = (Boolean)c[2];
+
+            RoleInfo roleInfo = _security.prepareConstraintInfo(requestPath, httpMethod);
+            boolean constraintIsChecked = expectedForbidden && !"GET".equalsIgnoreCase(httpMethod);
+            Assert.assertEquals(String.format("%s %s roleInfo isChecked", httpMethod, requestPath), constraintIsChecked, roleInfo.isChecked());
+            if (roleInfo.isChecked())
+            {
+                Assert.assertEquals(String.format("%s %s forbidden", httpMethod, requestPath), expectedForbidden, roleInfo.isForbidden());
+            }
+        }
+    }
+
+    /**
+     * Test of two constraints that have the same path, same http-method-omission, no roles, but different auth-constraint settings.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testCombinedAllowedForbiddenMethodOmissionConstraints() throws Exception
+    {
+        // This is the reverse order from testCombinedForbiddenAllowedMethodOmissionConstraints
+        assertCombinedAllowedForbiddenMethodOmissionConstraints(false);
+    }
+
+    /**
+     * Test of two constraints that have the same path, same http-method-omission, no roles, but different auth-constraint settings.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testCombinedForbiddenAllowedMethodOmissionConstraints() throws Exception
+    {
+        // This is the reverse order from testCombinedAllowedForbiddenMethodOmissionConstraints
+        assertCombinedAllowedForbiddenMethodOmissionConstraints(true);
+    }
+
+    /**
+     * Request methods that are a substring of an http-method-omission must not be treated as omitted
+     * (ie they must still be covered by the constraint).
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testMethodOmissionSubstringBypass() throws Exception
+    {
+        String[][] cases = {
+            // omitted method, attacker method that is a substring of the omission key
+            {"PROPPATCH", "PATCH"},
+            {"UNLOCK", "LOCK"},
+            {"UNBIND", "BIND"},
+            {"REBIND", "BIND"},
+            {"UNLINK", "LINK"},
+            {"GET", "ET"},
+            {"GET", "omission"},
+            {"GET", "T.omission"}
+        };
+
+        for (String[] c : cases)
+        {
+            String omittedMethod = c[0];
+            String attackMethod = c[1];
+
+            resetServer();
+            Constraint adminConstraint = new Constraint();
+            adminConstraint.setAuthenticate(true);
+            adminConstraint.setName("admin omission");
+            adminConstraint.setRoles(new String[]{"administrator"});
+            ConstraintMapping mapping = new ConstraintMapping();
+            mapping.setPathSpec("/secure/*");
+            mapping.setMethodOmissions(new String[]{omittedMethod});
+            mapping.setConstraint(adminConstraint);
+            _security.addConstraintMapping(mapping);
+            _security.setAuthenticator(new BasicAuthenticator());
+            _server.start();
+
+            String response;
+            // The omitted method is not covered by the constraint
+            response = _connector.getResponses(omittedMethod + " /ctx/secure/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat(omittedMethod, response, Matchers.startsWith("HTTP/1.1 200 "));
+
+            // Any other method is covered by the constraint
+            response = _connector.getResponses("POST /ctx/secure/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat(omittedMethod, response, Matchers.startsWith("HTTP/1.1 401 "));
+
+            // A method that is a substring of the omission must also be covered by the constraint
+            response = _connector.getResponses(attackMethod + " /ctx/secure/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat(omittedMethod + " vs " + attackMethod, response, Matchers.startsWith("HTTP/1.1 401 "));
+
+            response = _connector.getResponses(attackMethod + " /ctx/secure/info HTTP/1.0\r\n" +
+                "Authorization: Basic " + B64Code.encode("admin:password") + "\r\n" +
+                "\r\n");
+            Assert.assertThat(omittedMethod + " vs " + attackMethod, response, Matchers.startsWith("HTTP/1.1 200 "));
+            Assert.assertThat(omittedMethod + " vs " + attackMethod, response, Matchers.containsString("user=admin"));
+        }
+    }
+
+    @Test
+    public void testMultipleMethodOmissionSubstringBypass() throws Exception
+    {
+        Constraint adminConstraint = new Constraint();
+        adminConstraint.setAuthenticate(true);
+        adminConstraint.setName("admin omission");
+        adminConstraint.setRoles(new String[]{"administrator"});
+        ConstraintMapping mapping = new ConstraintMapping();
+        mapping.setPathSpec("/secure/*");
+        mapping.setMethodOmissions(new String[]{"GET", "PROPPATCH"});
+        mapping.setConstraint(adminConstraint);
+        _security.addConstraintMapping(mapping);
+        _security.setAuthenticator(new BasicAuthenticator());
+        _server.start();
+
+        String response;
+        response = _connector.getResponses("GET /ctx/secure/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+        response = _connector.getResponses("PROPPATCH /ctx/secure/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+
+        for (String method : Arrays.asList("PATCH", "GET.PROPPATCH", "T.PROP", "POST", "PUT"))
+        {
+            response = _connector.getResponses(method + " /ctx/secure/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat(method, response, Matchers.startsWith("HTTP/1.1 401 "));
+        }
+    }
+
+    /**
+     * A request method spelled like an internal constraint mapping key ("*" or "&lt;method&gt;.omission")
+     * must not short-cut the combination of the http-method-omission constraints.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testRequestMethodNamedLikeAllMethodsKey() throws Exception
+    {
+        Constraint relaxConstraint = new Constraint();
+        relaxConstraint.setAuthenticate(false);
+        relaxConstraint.setName("relax");
+        ConstraintMapping allMethods = new ConstraintMapping();
+        allMethods.setPathSpec("/star/*");
+        allMethods.setConstraint(relaxConstraint);
+
+        Constraint adminConstraint = new Constraint();
+        adminConstraint.setAuthenticate(true);
+        adminConstraint.setName("admin");
+        adminConstraint.setRoles(new String[]{"administrator"});
+        ConstraintMapping adminOmitGet = new ConstraintMapping();
+        adminOmitGet.setPathSpec("/star/*");
+        adminOmitGet.setMethodOmissions(new String[]{"GET"});
+        adminOmitGet.setConstraint(adminConstraint);
+
+        _security.addConstraintMapping(allMethods);
+        _security.addConstraintMapping(adminOmitGet);
+        _security.setAuthenticator(new BasicAuthenticator());
+        _server.start();
+
+        String response;
+        response = _connector.getResponses("GET /ctx/star/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+
+        response = _connector.getResponses("PUT /ctx/star/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 401 "));
+
+        response = _connector.getResponses("* /ctx/star/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 401 "));
+
+        response = _connector.getResponses("* /ctx/star/info HTTP/1.0\r\n" +
+            "Authorization: Basic " + B64Code.encode("admin:password") + "\r\n" +
+            "\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+        Assert.assertThat(response, Matchers.containsString("user=admin"));
+    }
+
+    @Test
+    public void testRequestMethodNamedLikeMethodOmissionKey() throws Exception
+    {
+        Constraint adminConstraint = new Constraint();
+        adminConstraint.setAuthenticate(true);
+        adminConstraint.setName("admin");
+        adminConstraint.setRoles(new String[]{"administrator"});
+        ConstraintMapping allMethods = new ConstraintMapping();
+        allMethods.setPathSpec("/dotomit/*");
+        allMethods.setConstraint(adminConstraint);
+
+        Constraint relaxConstraint = new Constraint();
+        relaxConstraint.setAuthenticate(false);
+        relaxConstraint.setName("relax");
+        ConstraintMapping relaxOmitGet = new ConstraintMapping();
+        relaxOmitGet.setPathSpec("/dotomit/*");
+        relaxOmitGet.setMethodOmissions(new String[]{"GET"});
+        relaxOmitGet.setConstraint(relaxConstraint);
+
+        _security.addConstraintMapping(allMethods);
+        _security.addConstraintMapping(relaxOmitGet);
+        _security.setAuthenticator(new BasicAuthenticator());
+        _server.start();
+
+        String response;
+        response = _connector.getResponses("PUT /ctx/dotomit/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 401 "));
+
+        response = _connector.getResponses("GET.omission /ctx/dotomit/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 401 "));
+    }
+
+    private void assertDuplicateMethodOmissionConstraintsCombined(boolean forbiddenFirst) throws Exception
+    {
+        Constraint forbidConstraint = new Constraint();
+        forbidConstraint.setAuthenticate(true);
+        forbidConstraint.setName("forbid");
+        ConstraintMapping forbidOmitGet = new ConstraintMapping();
+        forbidOmitGet.setPathSpec("/dup/*");
+        forbidOmitGet.setMethodOmissions(new String[]{"GET"});
+        forbidOmitGet.setConstraint(forbidConstraint);
+
+        Constraint relaxConstraint = new Constraint();
+        relaxConstraint.setAuthenticate(false);
+        relaxConstraint.setName("relax");
+        ConstraintMapping relaxOmitGet = new ConstraintMapping();
+        relaxOmitGet.setPathSpec("/dup/*");
+        relaxOmitGet.setMethodOmissions(new String[]{"GET"});
+        relaxOmitGet.setConstraint(relaxConstraint);
+
+        if (forbiddenFirst)
+        {
+            _security.addConstraintMapping(forbidOmitGet);
+            _security.addConstraintMapping(relaxOmitGet);
+        }
+        else
+        {
+            _security.addConstraintMapping(relaxOmitGet);
+            _security.addConstraintMapping(forbidOmitGet);
+        }
+        _security.setAuthenticator(new BasicAuthenticator());
+        _server.start();
+
+        String response;
+        response = _connector.getResponses("GET /ctx/dup/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+
+        response = _connector.getResponses("POST /ctx/dup/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 403 "));
+
+        response = _connector.getResponses("POST /ctx/dup/info HTTP/1.0\r\n" +
+            "Authorization: Basic " + B64Code.encode("admin:password") + "\r\n" +
+            "\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 403 "));
+    }
+
+    /**
+     * Two constraints with the same path and the same http-method-omission must be combined,
+     * regardless of their declaration order, so the forbidden constraint is not overridden.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testDuplicateMethodOmissionConstraintsCombinedForbiddenFirst() throws Exception
+    {
+        assertDuplicateMethodOmissionConstraintsCombined(true);
+    }
+
+    @Test
+    public void testDuplicateMethodOmissionConstraintsCombinedForbiddenLast() throws Exception
+    {
+        assertDuplicateMethodOmissionConstraintsCombined(false);
+    }
+
+    @Test
+    public void testDuplicateMethodOmissionConstraintsCombinedWhenStarted() throws Exception
+    {
+        _security.setAuthenticator(new BasicAuthenticator());
+        _server.start();
+
+        Constraint forbidConstraint = new Constraint();
+        forbidConstraint.setAuthenticate(true);
+        forbidConstraint.setName("forbid");
+        ConstraintMapping forbidOmitGet = new ConstraintMapping();
+        forbidOmitGet.setPathSpec("/dup/*");
+        forbidOmitGet.setMethodOmissions(new String[]{"GET"});
+        forbidOmitGet.setConstraint(forbidConstraint);
+        _security.addConstraintMapping(forbidOmitGet);
+
+        String response;
+        response = _connector.getResponses("POST /ctx/dup/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 403 "));
+
+        Constraint relaxConstraint = new Constraint();
+        relaxConstraint.setAuthenticate(false);
+        relaxConstraint.setName("relax");
+        ConstraintMapping relaxOmitGet = new ConstraintMapping();
+        relaxOmitGet.setPathSpec("/dup/*");
+        relaxOmitGet.setMethodOmissions(new String[]{"GET"});
+        relaxOmitGet.setConstraint(relaxConstraint);
+        _security.addConstraintMapping(relaxOmitGet);
+
+        response = _connector.getResponses("POST /ctx/dup/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 403 "));
+        response = _connector.getResponses("GET /ctx/dup/info HTTP/1.0\r\n\r\n");
+        Assert.assertThat(response, Matchers.startsWith("HTTP/1.1 200 "));
+    }
+
+    /**
+     * Duplicate http-method-omission constraints (forbidden one first) that are also combined with
+     * a constraint covering all methods of the same path must still result in the request being forbidden.
+     * @throws Exception if test fails
+     */
+    @Test
+    public void testDuplicateMethodOmissionConstraintsCombinedWithAllMethodsConstraint() throws Exception
+    {
+        for (boolean forbiddenFirst : new boolean[]{true, false})
+        {
+            resetServer();
+            Constraint userConstraint = new Constraint();
+            userConstraint.setAuthenticate(true);
+            userConstraint.setName("user");
+            userConstraint.setRoles(new String[]{"user"});
+            ConstraintMapping allMethods = new ConstraintMapping();
+            allMethods.setPathSpec("/dupall/*");
+            allMethods.setConstraint(userConstraint);
+
+            Constraint forbidConstraint = new Constraint();
+            forbidConstraint.setAuthenticate(true);
+            forbidConstraint.setName("forbid");
+            ConstraintMapping forbidOmitGet = new ConstraintMapping();
+            forbidOmitGet.setPathSpec("/dupall/*");
+            forbidOmitGet.setMethodOmissions(new String[]{"GET"});
+            forbidOmitGet.setConstraint(forbidConstraint);
+
+            Constraint relaxConstraint = new Constraint();
+            relaxConstraint.setAuthenticate(false);
+            relaxConstraint.setName("relax");
+            ConstraintMapping relaxOmitGet = new ConstraintMapping();
+            relaxOmitGet.setPathSpec("/dupall/*");
+            relaxOmitGet.setMethodOmissions(new String[]{"GET"});
+            relaxOmitGet.setConstraint(relaxConstraint);
+
+            _security.addConstraintMapping(allMethods);
+            if (forbiddenFirst)
+            {
+                _security.addConstraintMapping(forbidOmitGet);
+                _security.addConstraintMapping(relaxOmitGet);
+            }
+            else
+            {
+                _security.addConstraintMapping(relaxOmitGet);
+                _security.addConstraintMapping(forbidOmitGet);
+            }
+            _security.setAuthenticator(new BasicAuthenticator());
+            _server.start();
+
+            String response;
+            response = _connector.getResponses("GET /ctx/dupall/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat("forbiddenFirst=" + forbiddenFirst, response, Matchers.startsWith("HTTP/1.1 401 "));
+
+            response = _connector.getResponses("GET /ctx/dupall/info HTTP/1.0\r\n" +
+                "Authorization: Basic " + B64Code.encode("user:password") + "\r\n" +
+                "\r\n");
+            Assert.assertThat("forbiddenFirst=" + forbiddenFirst, response, Matchers.startsWith("HTTP/1.1 200 "));
+
+            response = _connector.getResponses("POST /ctx/dupall/info HTTP/1.0\r\n\r\n");
+            Assert.assertThat("forbiddenFirst=" + forbiddenFirst, response, Matchers.startsWith("HTTP/1.1 403 "));
+
+            response = _connector.getResponses("POST /ctx/dupall/info HTTP/1.0\r\n" +
+                "Authorization: Basic " + B64Code.encode("user:password") + "\r\n" +
+                "\r\n");
+            Assert.assertThat("forbiddenFirst=" + forbiddenFirst, response, Matchers.startsWith("HTTP/1.1 403 "));
+        }
+    }
     private class RequestHandler extends AbstractHandler
     {
         @Override
