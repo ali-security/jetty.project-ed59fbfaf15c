@@ -1,0 +1,124 @@
+name: seal-build
+
+# Upstream Jetty 9.3.x has no GitHub Actions CI (it builds on Jenkins, see
+# Jenkinsfile: JDK 8 + Maven 3, `mvn -B clean install`). This workflow builds
+# the jetty-security module (main jar + -config jar) and runs its test suite.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire test selector(s) for jetty-security (empty = full suite)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MAVEN_OPTS: "-Xms256m -Xmx1024m -Djava.awt.headless=true"
+      # Lint / static-analysis / licence-header / enforcer / doc gates are not tests.
+      MVN_ARGS: >-
+        -B -V -e
+        -Dpmd.skip=true
+        -Dlicense.skip=true
+        -Denforcer.skip=true
+        -Dfindbugs.skip=true
+        -Dcheckstyle.skip=true
+        -Dclirr.skip=true
+        -Dmaven.javadoc.skip=true
+        -Dmaven.source.skip=true
+        -Dgpg.skip=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install Maven 3.9.4
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/maven.tar.gz" \
+            https://archive.apache.org/dist/maven/maven-3/3.9.4/binaries/apache-maven-3.9.4-bin.tar.gz
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          MVN_HOME="$RUNNER_TEMP/apache-maven-3.9.4"
+          # jetty-version-maven-plugin's parent chain lives on repo.jenkins-ci.org;
+          # reach it over https (Maven 3.8+ blocks plain-http repositories).
+          cat > "$MVN_HOME/conf/settings.xml" <<'EOF'
+          <settings>
+            <mirrors>
+              <mirror>
+                <id>central-https</id>
+                <mirrorOf>*,!jenkins-ci</mirrorOf>
+                <url>https://repo.maven.apache.org/maven2</url>
+              </mirror>
+            </mirrors>
+            <profiles>
+              <profile>
+                <id>jenkins-ci</id>
+                <repositories>
+                  <repository>
+                    <id>jenkins-ci</id>
+                    <url>https://repo.jenkins-ci.org/public/</url>
+                    <snapshots><enabled>false</enabled></snapshots>
+                  </repository>
+                </repositories>
+                <pluginRepositories>
+                  <pluginRepository>
+                    <id>jenkins-ci</id>
+                    <url>https://repo.jenkins-ci.org/public/</url>
+                    <snapshots><enabled>false</enabled></snapshots>
+                  </pluginRepository>
+                </pluginRepositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>jenkins-ci</activeProfile>
+            </activeProfiles>
+          </settings>
+          EOF
+          echo "$MVN_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Build jetty-security dependencies
+        run: mvn $MVN_ARGS clean install -pl jetty-security -am -DskipTests
+
+      - name: Build and test jetty-security
+        run: |
+          set -euo pipefail
+          FILTER="${{ inputs.test-filter }}"
+          if [ -n "$FILTER" ]; then
+            mvn $MVN_ARGS install -pl jetty-security -DfailIfNoTests=false "-Dtest=${FILTER// /,}" 2>&1 | tee "$RUNNER_TEMP/test.log"
+          else
+            mvn $MVN_ARGS install -pl jetty-security 2>&1 | tee "$RUNNER_TEMP/test.log"
+          fi
+
+      - name: Test summary
+        if: always()
+        shell: python
+        run: |
+          import glob, xml.etree.ElementTree as ET
+          tot = fail = err = skip = 0
+          for f in sorted(glob.glob("jetty-security/target/surefire-reports/TEST-*.xml")):
+              r = ET.parse(f).getroot()
+              t, fa, e, s = (int(r.get(k, 0)) for k in ("tests", "failures", "errors", "skipped"))
+              tot += t; fail += fa; err += e; skip += s
+              print(f"{r.get('name')}: tests={t} failures={fa} errors={e} skipped={s}")
+              for tc in r.iter("testcase"):
+                  sk = tc.find("skipped")
+                  if sk is not None:
+                      print(f"  SKIPPED {tc.get('classname')}#{tc.get('name')}: {sk.get('message') or '(no message)'}")
+          print(f"TOTAL jetty-security tests run: {tot}, passed: {tot - fail - err - skip}, failures: {fail}, errors: {err}, skipped: {skip}")
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetty-security-jars
+          path: |
+            jetty-security/target/jetty-security-*.jar
+            !jetty-security/target/jetty-security-*-sources.jar
+            !jetty-security/target/jetty-security-*-javadoc.jar
+          if-no-files-found: error
